@@ -37,29 +37,30 @@ The bot sends an itemized receipt to your engineering channel:
 =========================
 🚨 Total Monthly Waste: $25.25
 ```
-## 🚀 Quick Start
-1. Clone & Install
+## **🚀 Quick Start**
+1. **Clone & Install**
 
 Bash
 git clone [https://github.com/shakhya-h/finops-waste-hunter.git](https://github.com/shakhya-h/finops-waste-hunter.git)
 cd finops-waste-hunter
 pip install boto3 requests
 
-2. Configure AWS
+2. **Configure AWS**
 
 Bash
 export AWS_ACCESS_KEY_ID="your_key"
 export AWS_SECRET_ACCESS_KEY="your_secret"
 export SLACK_WEBHOOK_URL="your_webhook"
-3. Run the Hunter
+
+3. **Run the Hunter**
 
 Bash
 python waste_hunter.py
-## ⚙️ Architecture
+## **⚙️ Architecture**
 Core: Python script uses boto3 to loop through all active AWS regions (describe_regions).
 
 Logic: Aggregates costs per region and filters out resources tagged Skip=True.
 
 CI/CD: cron job on GitHub Actions triggers the scan every Sunday at 00:00 UTC.
 
-Shakhya Halder,2026
+**Shakhya Halder,2026**
