@@ -332,6 +332,175 @@
 # if __name__ == "__main__":
 #     main()
 
+# import boto3
+# import os
+# import requests
+# import json
+# from datetime import datetime, timezone, timedelta
+
+# # --- PRICING CONSTANTS (Monthly Estimates) ---
+# EBS_PRICE_PER_GB  = 0.10    # Standard gp3 pricing
+# IDLE_IP_PRICE     = 3.60    # ~$0.005/hr
+# SNAPSHOT_PRICE    = 0.05    # Per GB/mo
+# ALB_PRICE         = 16.00   # Application Load Balancer base cost
+
+# # --- CONFIGURATION ---
+# SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
+
+# def send_slack_alert(message):
+#     if SLACK_WEBHOOK:
+#         payload = {"text": message}
+#         try:
+#             requests.post(SLACK_WEBHOOK, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
+#         except Exception as e:
+#             print(f"Failed to send Slack alert: {e}")
+
+# def should_skip(tags):
+#     """Safety Valve: Returns True if resource has a 'Skip' tag"""
+#     if not tags:
+#         return False
+#     for tag in tags:
+#         if tag['Key'] == 'Skip' and tag['Value'] == 'true':
+#             return True
+#     return False
+
+# def hunt_snapshots(ec2_client, region):
+#     # print(f"   Scanning Snapshots...") # Commented out to reduce noise
+#     savings = 0.0
+#     try:
+#         snapshots = ec2_client.describe_snapshots(OwnerIds=['self'])['Snapshots']
+#         limit_date = datetime.now(timezone.utc) - timedelta(days=30)
+        
+#         for snap in snapshots:
+#             if should_skip(snap.get('Tags', [])):
+#                 continue
+#             if snap['StartTime'] < limit_date:
+#                 cost = snap['VolumeSize'] * SNAPSHOT_PRICE
+#                 msg = f"📸 *{region}*: Old Snapshot `{snap['SnapshotId']}` ({snap['VolumeSize']}GB). Waste: ${cost:.2f}/mo"
+#                 print(msg)
+#                 savings += cost
+#     except Exception as e:
+#         print(f"Error scanning snapshots in {region}: {e}")
+        
+#     return savings
+
+# def hunt_load_balancers(elbv2_client, region):
+#     # print(f"   Scanning Load Balancers...")
+#     savings = 0.0
+#     try:
+#         lbs = elbv2_client.describe_load_balancers()['LoadBalancers']
+#         for lb in lbs:
+#             # Tags need a separate call for LBs
+#             try:
+#                 tags = elbv2_client.describe_tags(ResourceArns=[lb['LoadBalancerArn']])['TagDescriptions'][0]['Tags']
+#                 if should_skip(tags):
+#                     continue
+#             except:
+#                 pass # If tag fetch fails, proceed with caution or skip
+                
+#             lb_arn = lb['LoadBalancerArn']
+#             tgs = elbv2_client.describe_target_groups(LoadBalancerArn=lb_arn)['TargetGroups']
+            
+#             is_empty = True
+#             for tg in tgs:
+#                 health = elbv2_client.describe_target_health(TargetGroupArn=tg['TargetGroupArn'])['TargetHealthDescriptions']
+#                 if len(health) > 0:
+#                     is_empty = False
+#                     break
+            
+#             if is_empty:
+#                 msg = f"👻 *{region}*: Ghost LB `{lb['LoadBalancerName']}`. Waste: ${ALB_PRICE}/mo"
+#                 print(msg)
+#                 savings += ALB_PRICE
+#     except Exception as e:
+#         # Some regions might not support ELB or have permissions issues
+#         pass 
+            
+#     return savings
+
+# def hunt_elastic_ips(ec2_client, region):
+#     savings = 0.0
+#     try:
+#         addresses = ec2_client.describe_addresses()
+#         for addr in addresses['Addresses']:
+#             if should_skip(addr.get('Tags', [])):
+#                 continue
+#             if 'InstanceId' not in addr:
+#                 msg = f"📍 *{region}*: Unused IP `{addr['PublicIp']}`. Waste: ${IDLE_IP_PRICE}/mo"
+#                 print(msg)
+#                 savings += IDLE_IP_PRICE
+#     except Exception as e:
+#         print(f"Error scanning IPs in {region}: {e}")
+#     return savings
+
+# def hunt_volumes(ec2_resource, region):
+#     savings = 0.0
+#     try:
+#         for volume in ec2_resource.volumes.all():
+#             if should_skip(volume.tags):
+#                 continue
+#             if volume.state == 'available':
+#                 vol_cost = volume.size * EBS_PRICE_PER_GB
+#                 msg = f"💿 *{region}*: Unattached Volume `{volume.id}` ({volume.size}GB). Waste: ${vol_cost:.2f}/mo"
+#                 print(msg)
+#                 savings += vol_cost
+#     except Exception as e:
+#         print(f"Error scanning volumes in {region}: {e}")
+#     return savings
+
+# def get_active_regions():
+#     """Returns a list of all active AWS regions"""
+#     ec2 = boto3.client('ec2', region_name='us-east-1')
+#     response = ec2.describe_regions()
+#     return [region['RegionName'] for region in response['Regions']]
+
+# def main():
+#     print("🚀 Starting Global FinOps Scan...")
+    
+#     # 1. Get all regions
+#     try:
+#         regions = get_active_regions()
+#     except Exception as e:
+#         print(f"Could not fetch regions: {e}")
+#         regions = ['eu-north-1', 'us-east-1'] # Fallback
+        
+#     global_savings = 0.0
+    
+#     # 2. Loop through every region
+#     for region in regions:
+#         # print(f"--- Scanning {region} ---") # Optional: Uncomment for verbose logs
+#         try:
+#             # Initialize clients for THIS specific region
+#             ec2_resource = boto3.resource('ec2', region_name=region)
+#             ec2_client = boto3.client('ec2', region_name=region)
+#             elbv2_client = boto3.client('elbv2', region_name=region)
+            
+#             # Run Hunts
+#             global_savings += hunt_volumes(ec2_resource, region)
+#             global_savings += hunt_elastic_ips(ec2_client, region)
+#             global_savings += hunt_snapshots(ec2_client, region)
+#             global_savings += hunt_load_balancers(elbv2_client, region)
+            
+#         except Exception as e:
+#             # If a region is disabled or has errors, skip it
+#             # print(f"Skipping {region}: {e}")
+#             continue
+            
+#     # 3. Final Report
+#     if global_savings > 0:
+#         summary = (
+#             f"💰 *Global FinOps Report*\n"
+#             f"---------------------------\n"
+#             f"🚨 *Total Monthly Waste Found: ${global_savings:.2f}*"
+#         )
+#         print(summary)
+#         send_slack_alert(summary)
+#     else:
+#         print("✅ Global Infrastructure Clean.")
+
+# if __name__ == "__main__":
+#     main()
+
 import boto3
 import os
 import requests
@@ -365,7 +534,6 @@ def should_skip(tags):
     return False
 
 def hunt_snapshots(ec2_client, region):
-    # print(f"   Scanning Snapshots...") # Commented out to reduce noise
     savings = 0.0
     try:
         snapshots = ec2_client.describe_snapshots(OwnerIds=['self'])['Snapshots']
@@ -376,27 +544,22 @@ def hunt_snapshots(ec2_client, region):
                 continue
             if snap['StartTime'] < limit_date:
                 cost = snap['VolumeSize'] * SNAPSHOT_PRICE
-                msg = f"📸 *{region}*: Old Snapshot `{snap['SnapshotId']}` ({snap['VolumeSize']}GB). Waste: ${cost:.2f}/mo"
-                print(msg)
+                print(f"   📸 Old Snapshot: {snap['SnapshotId']} (${cost:.2f})")
                 savings += cost
     except Exception as e:
-        print(f"Error scanning snapshots in {region}: {e}")
-        
+        pass
     return savings
 
 def hunt_load_balancers(elbv2_client, region):
-    # print(f"   Scanning Load Balancers...")
     savings = 0.0
     try:
         lbs = elbv2_client.describe_load_balancers()['LoadBalancers']
         for lb in lbs:
-            # Tags need a separate call for LBs
+            # Check tags first
             try:
                 tags = elbv2_client.describe_tags(ResourceArns=[lb['LoadBalancerArn']])['TagDescriptions'][0]['Tags']
-                if should_skip(tags):
-                    continue
-            except:
-                pass # If tag fetch fails, proceed with caution or skip
+                if should_skip(tags): continue
+            except: pass
                 
             lb_arn = lb['LoadBalancerArn']
             tgs = elbv2_client.describe_target_groups(LoadBalancerArn=lb_arn)['TargetGroups']
@@ -409,13 +572,10 @@ def hunt_load_balancers(elbv2_client, region):
                     break
             
             if is_empty:
-                msg = f"👻 *{region}*: Ghost LB `{lb['LoadBalancerName']}`. Waste: ${ALB_PRICE}/mo"
-                print(msg)
+                print(f"   👻 Ghost LB: {lb['LoadBalancerName']} (${ALB_PRICE:.2f})")
                 savings += ALB_PRICE
-    except Exception as e:
-        # Some regions might not support ELB or have permissions issues
+    except:
         pass 
-            
     return savings
 
 def hunt_elastic_ips(ec2_client, region):
@@ -426,11 +586,10 @@ def hunt_elastic_ips(ec2_client, region):
             if should_skip(addr.get('Tags', [])):
                 continue
             if 'InstanceId' not in addr:
-                msg = f"📍 *{region}*: Unused IP `{addr['PublicIp']}`. Waste: ${IDLE_IP_PRICE}/mo"
-                print(msg)
+                print(f"   📍 Unused IP: {addr['PublicIp']} (${IDLE_IP_PRICE:.2f})")
                 savings += IDLE_IP_PRICE
-    except Exception as e:
-        print(f"Error scanning IPs in {region}: {e}")
+    except:
+        pass
     return savings
 
 def hunt_volumes(ec2_resource, region):
@@ -441,60 +600,73 @@ def hunt_volumes(ec2_resource, region):
                 continue
             if volume.state == 'available':
                 vol_cost = volume.size * EBS_PRICE_PER_GB
-                msg = f"💿 *{region}*: Unattached Volume `{volume.id}` ({volume.size}GB). Waste: ${vol_cost:.2f}/mo"
-                print(msg)
+                print(f"   💿 Unattached Vol: {volume.id} (${vol_cost:.2f})")
                 savings += vol_cost
-    except Exception as e:
-        print(f"Error scanning volumes in {region}: {e}")
+    except:
+        pass
     return savings
 
 def get_active_regions():
-    """Returns a list of all active AWS regions"""
     ec2 = boto3.client('ec2', region_name='us-east-1')
-    response = ec2.describe_regions()
-    return [region['RegionName'] for region in response['Regions']]
+    return [region['RegionName'] for region in ec2.describe_regions()['Regions']]
 
 def main():
     print("🚀 Starting Global FinOps Scan...")
     
-    # 1. Get all regions
     try:
         regions = get_active_regions()
-    except Exception as e:
-        print(f"Could not fetch regions: {e}")
+    except:
         regions = ['eu-north-1', 'us-east-1'] # Fallback
         
     global_savings = 0.0
+    detailed_report = []
     
-    # 2. Loop through every region
+    # Header for the report
+    detailed_report.append("💰 *Global FinOps Report*")
+    detailed_report.append("=========================")
+
     for region in regions:
-        # print(f"--- Scanning {region} ---") # Optional: Uncomment for verbose logs
         try:
-            # Initialize clients for THIS specific region
-            ec2_resource = boto3.resource('ec2', region_name=region)
-            ec2_client = boto3.client('ec2', region_name=region)
-            elbv2_client = boto3.client('elbv2', region_name=region)
+            # print(f"Scanning {region}...") # Uncomment for debug
+            ec2_res = boto3.resource('ec2', region_name=region)
+            ec2_cli = boto3.client('ec2', region_name=region)
+            elbv2_cli = boto3.client('elbv2', region_name=region)
             
-            # Run Hunts
-            global_savings += hunt_volumes(ec2_resource, region)
-            global_savings += hunt_elastic_ips(ec2_client, region)
-            global_savings += hunt_snapshots(ec2_client, region)
-            global_savings += hunt_load_balancers(elbv2_client, region)
+            # Capture costs individually
+            r_vol = hunt_volumes(ec2_res, region)
+            r_ip = hunt_elastic_ips(ec2_cli, region)
+            r_snap = hunt_snapshots(ec2_cli, region)
+            r_lb = hunt_load_balancers(elbv2_cli, region)
             
+            region_total = r_vol + r_ip + r_snap + r_lb
+            
+            # If this region has waste, add a section to the report
+            if region_total > 0:
+                print(f"Found ${region_total} waste in {region}") # Console log
+                
+                # Build the region block
+                region_block = f"🌍 *{region}*: ${region_total:.2f}"
+                if r_vol > 0:  region_block += f"\n     • Volumes: ${r_vol:.2f}"
+                if r_ip > 0:   region_block += f"\n     • IPs: ${r_ip:.2f}"
+                if r_snap > 0: region_block += f"\n     • Snapshots: ${r_snap:.2f}"
+                if r_lb > 0:   region_block += f"\n     • LBs: ${r_lb:.2f}"
+                
+                detailed_report.append(region_block)
+                global_savings += region_total
+                
         except Exception as e:
-            # If a region is disabled or has errors, skip it
-            # print(f"Skipping {region}: {e}")
             continue
             
-    # 3. Final Report
+    # Final Footer
+    detailed_report.append("=========================")
+    detailed_report.append(f"🚨 *Total Monthly Waste: ${global_savings:.2f}*")
+    
+    # Only send alert if waste was found
     if global_savings > 0:
-        summary = (
-            f"💰 *Global FinOps Report*\n"
-            f"---------------------------\n"
-            f"🚨 *Total Monthly Waste Found: ${global_savings:.2f}*"
-        )
-        print(summary)
-        send_slack_alert(summary)
+        final_message = "\n".join(detailed_report)
+        print("\n--- FINAL REPORT PREVIEW ---")
+        print(final_message)
+        send_slack_alert(final_message)
     else:
         print("✅ Global Infrastructure Clean.")
 
