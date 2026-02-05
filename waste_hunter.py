@@ -112,74 +112,222 @@
 # if __name__ == "__main__":
 #     main()
 
+# import boto3
+# import os
+# import requests
+# import json
+
+# # --- PRICING CONSTANTS (Monthly Estimates) ---
+# EBS_PRICE_PER_GB = 0.10   # Standard gp3 pricing
+# IDLE_IP_PRICE    = 3.60   # $0.005/hr * 730 hours
+
+# def send_slack_alert(message):
+#     webhook_url = os.getenv('SLACK_WEBHOOK_URL')
+#     if webhook_url:
+#         payload = {"text": message}
+#         requests.post(webhook_url, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
+
+# def hunt_elastic_ips(ec2_client, region):
+#     print(f"--- Scanning Elastic IPs in {region} ---")
+#     addresses = ec2_client.describe_addresses()
+#     savings = 0.0
+    
+#     for addr in addresses['Addresses']:
+#         if 'InstanceId' not in addr:
+#             ip_msg = f"📍 *Unused IP Found*: `{addr['PublicIp']}`. Waste: ${IDLE_IP_PRICE}/mo"
+#             print(ip_msg)
+#             # send_slack_alert(ip_msg) # Optional: Uncomment if you want individual alerts
+#             savings += IDLE_IP_PRICE
+            
+#     return savings
+
+# def hunt_volumes(ec2_resource, region):
+#     print(f"--- Scanning EBS Volumes in {region} ---")
+#     savings = 0.0
+    
+#     for volume in ec2_resource.volumes.all():
+#         if volume.state == 'available':
+#             vol_cost = volume.size * EBS_PRICE_PER_GB
+#             vol_msg = f"💿 *Unused Volume Found*: `{volume.id}` ({volume.size}GB). Waste: ${vol_cost:.2f}/mo"
+#             print(vol_msg)
+#             # send_slack_alert(vol_msg) # Optional: Uncomment if you want individual alerts
+#             savings += vol_cost
+            
+#     return savings
+
+# def main():
+#     region = 'eu-north-1'
+#     ec2_resource = boto3.resource('ec2', region_name=region)
+#     ec2_client = boto3.client('ec2', region_name=region)
+    
+#     # Get savings from each function
+#     vol_savings = hunt_volumes(ec2_resource, region)
+#     ip_savings = hunt_elastic_ips(ec2_client, region)
+    
+#     total_savings = vol_savings + ip_savings
+    
+#     # Send one consolidated summary message
+#     if total_savings > 0:
+#         summary_msg = (
+#             f"💰 *FinOps Weekly Report* ({region})\n"
+#             f"-------------------------------------\n"
+#             f"• Unused Volumes Cost: ${vol_savings:.2f}/mo\n"
+#             f"• Idle IPs Cost:       ${ip_savings:.2f}/mo\n"
+#             f"-------------------------------------\n"
+#             f"🚨 *Total Potential Savings: ${total_savings:.2f} / month*"
+#         )
+#         print(summary_msg)
+#         send_slack_alert(summary_msg)
+#     else:
+#         print("✅ System Clean: No waste detected.")
+
+# if __name__ == "__main__":
+#     main()
+
 import boto3
 import os
 import requests
 import json
+from datetime import datetime, timezone, timedelta
 
 # --- PRICING CONSTANTS (Monthly Estimates) ---
-EBS_PRICE_PER_GB = 0.10   # Standard gp3 pricing
-IDLE_IP_PRICE    = 3.60   # $0.005/hr * 730 hours
+EBS_PRICE_PER_GB  = 0.10    # Standard gp3 pricing
+IDLE_IP_PRICE     = 3.60    # ~$0.005/hr
+SNAPSHOT_PRICE    = 0.05    # Per GB/mo
+ALB_PRICE         = 16.00   # Application Load Balancer base cost
+
+# --- CONFIGURATION ---
+REGION = 'eu-north-1'
+SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
 
 def send_slack_alert(message):
-    webhook_url = os.getenv('SLACK_WEBHOOK_URL')
-    if webhook_url:
+    if SLACK_WEBHOOK:
         payload = {"text": message}
-        requests.post(webhook_url, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
+        requests.post(SLACK_WEBHOOK, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
 
-def hunt_elastic_ips(ec2_client, region):
-    print(f"--- Scanning Elastic IPs in {region} ---")
-    addresses = ec2_client.describe_addresses()
+def should_skip(tags):
+    """Safety Valve: Returns True if resource has a 'Skip' tag"""
+    if not tags:
+        return False
+    for tag in tags:
+        if tag['Key'] == 'Skip' and tag['Value'] == 'true':
+            return True
+    return False
+
+def hunt_snapshots(ec2_client):
+    print(f"--- Scanning Old Snapshots (>30 days) ---")
     savings = 0.0
     
-    for addr in addresses['Addresses']:
-        if 'InstanceId' not in addr:
-            ip_msg = f"📍 *Unused IP Found*: `{addr['PublicIp']}`. Waste: ${IDLE_IP_PRICE}/mo"
-            print(ip_msg)
-            # send_slack_alert(ip_msg) # Optional: Uncomment if you want individual alerts
-            savings += IDLE_IP_PRICE
+    # Get snapshots owned by YOU (not public ones)
+    snapshots = ec2_client.describe_snapshots(OwnerIds=['self'])['Snapshots']
+    
+    # Calculate date 30 days ago
+    limit_date = datetime.now(timezone.utc) - timedelta(days=30)
+    
+    for snap in snapshots:
+        if should_skip(snap.get('Tags', [])):
+            continue
+            
+        # Check if snapshot is older than 30 days
+        if snap['StartTime'] < limit_date:
+            cost = snap['VolumeSize'] * SNAPSHOT_PRICE
+            msg = f"📸 *Old Snapshot*: `{snap['SnapshotId']}` ({snap['VolumeSize']}GB). Created: {snap['StartTime'].date()}. Waste: ${cost:.2f}/mo"
+            print(msg)
+            savings += cost
             
     return savings
 
-def hunt_volumes(ec2_resource, region):
-    print(f"--- Scanning EBS Volumes in {region} ---")
+def hunt_load_balancers(elbv2_client):
+    print(f"--- Scanning Idle Load Balancers ---")
     savings = 0.0
     
+    # Get all Application Load Balancers (ALBs)
+    lbs = elbv2_client.describe_load_balancers()['LoadBalancers']
+    
+    for lb in lbs:
+        # Check for tags using a separate API call (ALBs are tricky!)
+        tags = elbv2_client.describe_tags(ResourceArns=[lb['LoadBalancerArn']])['TagDescriptions'][0]['Tags']
+        if should_skip(tags):
+            continue
+            
+        lb_arn = lb['LoadBalancerArn']
+        
+        # Check if it has any target groups (listeners)
+        tgs = elbv2_client.describe_target_groups(LoadBalancerArn=lb_arn)['TargetGroups']
+        
+        is_empty = True
+        for tg in tgs:
+            # Check health of targets in this group
+            health = elbv2_client.describe_target_health(TargetGroupArn=tg['TargetGroupArn'])['TargetHealthDescriptions']
+            if len(health) > 0:
+                is_empty = False  # It has targets!
+                break
+        
+        if is_empty:
+            msg = f"👻 *Ghost Load Balancer*: `{lb['LoadBalancerName']}` has no active targets. Waste: ${ALB_PRICE}/mo"
+            print(msg)
+            savings += ALB_PRICE
+            
+    return savings
+
+def hunt_elastic_ips(ec2_client):
+    print(f"--- Scanning Elastic IPs ---")
+    savings = 0.0
+    addresses = ec2_client.describe_addresses()
+    
+    for addr in addresses['Addresses']:
+        if should_skip(addr.get('Tags', [])):
+            continue
+            
+        if 'InstanceId' not in addr:
+            msg = f"📍 *Unused IP*: `{addr['PublicIp']}`. Waste: ${IDLE_IP_PRICE}/mo"
+            print(msg)
+            savings += IDLE_IP_PRICE
+    return savings
+
+def hunt_volumes(ec2_resource):
+    print(f"--- Scanning EBS Volumes ---")
+    savings = 0.0
     for volume in ec2_resource.volumes.all():
+        if should_skip(volume.tags):
+            continue
+            
         if volume.state == 'available':
             vol_cost = volume.size * EBS_PRICE_PER_GB
-            vol_msg = f"💿 *Unused Volume Found*: `{volume.id}` ({volume.size}GB). Waste: ${vol_cost:.2f}/mo"
-            print(vol_msg)
-            # send_slack_alert(vol_msg) # Optional: Uncomment if you want individual alerts
+            msg = f"💿 *Unattached Volume*: `{volume.id}` ({volume.size}GB). Waste: ${vol_cost:.2f}/mo"
+            print(msg)
             savings += vol_cost
-            
     return savings
 
 def main():
-    region = 'eu-north-1'
-    ec2_resource = boto3.resource('ec2', region_name=region)
-    ec2_client = boto3.client('ec2', region_name=region)
+    # Initialize Clients
+    ec2_resource = boto3.resource('ec2', region_name=REGION)
+    ec2_client = boto3.client('ec2', region_name=REGION)
+    elbv2_client = boto3.client('elbv2', region_name=REGION) # New client for LBs
     
-    # Get savings from each function
-    vol_savings = hunt_volumes(ec2_resource, region)
-    ip_savings = hunt_elastic_ips(ec2_client, region)
+    # Run all hunts
+    s_vol = hunt_volumes(ec2_resource)
+    s_ip  = hunt_elastic_ips(ec2_client)
+    s_snap = hunt_snapshots(ec2_client)
+    s_lb = hunt_load_balancers(elbv2_client)
     
-    total_savings = vol_savings + ip_savings
+    total_savings = s_vol + s_ip + s_snap + s_lb
     
-    # Send one consolidated summary message
     if total_savings > 0:
-        summary_msg = (
-            f"💰 *FinOps Weekly Report* ({region})\n"
-            f"-------------------------------------\n"
-            f"• Unused Volumes Cost: ${vol_savings:.2f}/mo\n"
-            f"• Idle IPs Cost:       ${ip_savings:.2f}/mo\n"
-            f"-------------------------------------\n"
-            f"🚨 *Total Potential Savings: ${total_savings:.2f} / month*"
+        summary = (
+            f"💰 *FinOps Report* ({REGION})\n"
+            f"---------------------------\n"
+            f"• Volumes:   ${s_vol:.2f}\n"
+            f"• IPs:       ${s_ip:.2f}\n"
+            f"• Snapshots: ${s_snap:.2f}\n"
+            f"• LBs:       ${s_lb:.2f}\n"
+            f"---------------------------\n"
+            f"🚨 *Total Waste: ${total_savings:.2f} / mo*"
         )
-        print(summary_msg)
-        send_slack_alert(summary_msg)
+        print(summary)
+        send_slack_alert(summary)
     else:
-        print("✅ System Clean: No waste detected.")
+        print("✅ System Clean.")
 
 if __name__ == "__main__":
     main()
