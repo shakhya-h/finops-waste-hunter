@@ -1,27 +1,38 @@
-# 🚀 FinOps Waste Hunter (AWS)
+# 🌍 Global FinOps Waste Hunter
 
-A Python-based automation tool that identifies unattached EBS volumes (zombie resources) across AWS regions to reduce cloud spend.
+![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat&logo=python&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20ELB-orange?style=flat&logo=amazon-aws&logoColor=white)
+![Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-black?style=flat&logo=github&logoColor=white)
 
-## 📈 The Business Problem
-Cloud infrastructure often suffers from "resource leakage" where storage volumes remain active after their parent instances are terminated. For a mid-sized company, these orphaned volumes can easily cost **$500–$1,000/month** in unnecessary billing.
+> **Automated cloud governance tool that detects, quantifies, and reports "zombie" infrastructure across all AWS regions.**
 
-## 🛠️ Tech Stack & Skills
-* **Language:** Python (Boto3 SDK)
-* **Cloud:** AWS (EC2, IAM)
-* **Automation:** GitHub Actions (CI/CD)
-* **Observability:** Slack API Integration
+## ⚡ The Problem vs. Solution
+| The Pain 📉 | The Solution 🛡️ |
+| :--- | :--- |
+| **Hidden Costs:** Forgotten IPs & disks cost $100s/mo. | **Auto-Discovery:** Scans orphan resources globally. |
+| **Manual Audits:** Checking 15 regions takes hours. | **Zero-Touch:** Runs weekly via GitHub Actions. |
+| **Bill Shock:** No visibility until the invoice arrives. | **Instant Alerts:** Real-time Slack notifications with $$$ impact. |
 
-## ⚙️ How it Works
-1.  **Scanner:** A Python script queries the AWS EC2 API to find volumes in the `available` state.
-2.  **Automation:** GitHub Actions runs the script on a weekly `cron` schedule.
-3.  **Alerting:** If waste is found, an actionable alert is sent to a Slack channel via Webhooks.
+## 🎯 What it Hunts
+| Resource | Condition | Cost Estimate |
+| :--- | :--- | :--- |
+| **EBS Volumes** | Available / Unattached | ~$0.10 / GB |
+| **Load Balancers** | 0 Healthy Targets | ~$16.00 / mo |
+| **Elastic IPs** | Unassociated | ~$3.60 / mo |
+| **Snapshots** | Created > 30 days ago | ~$0.05 / GB |
 
+## 📸 Sample Output (Slack)
+The bot sends an itemized receipt to your engineering channel:
 
+```text
+💰 Global FinOps Report
+=========================
+🌍 eu-north-1: $20.25
+     • Volumes: $0.10 (1GB orphaned disk)
+     • LBs: $16.50 (Idle Load Balancer)
+     • IPs: $3.60 (Unused Static IP)
 
-## 💡 Impact Realized
-* **Cost Reduction:** Automates the discovery of resources that cost ~$0.10 per GB/month.
-* **Efficiency:** Replaces manual infrastructure audits with 100% automated reporting.
-* **Security:** Implements "Least Privilege" access using AWS IAM policies.
-
----
-*Created by Shakhya Halder.*
+🌍 us-east-1: $5.00
+     • Snapshots: $5.00 (100GB old backup)
+=========================
+🚨 Total Monthly Waste: $25.25
