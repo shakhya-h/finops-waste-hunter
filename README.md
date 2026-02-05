@@ -31,8 +31,33 @@ The bot sends an itemized receipt to your engineering channel:
      • Volumes: $0.10 (1GB orphaned disk)
      • LBs: $16.50 (Idle Load Balancer)
      • IPs: $3.60 (Unused Static IP)
-
 🌍 us-east-1: $5.00
      • Snapshots: $5.00 (100GB old backup)
 =========================
 🚨 Total Monthly Waste: $25.25
+
+🚀 Quick Start
+1. Clone & Install
+
+Bash
+git clone [https://github.com/shakhya-h/finops-waste-hunter.git](https://github.com/shakhya-h/finops-waste-hunter.git)
+pip install boto3 requests
+
+2. Configure AWS
+
+Bash
+export AWS_ACCESS_KEY_ID="your_key"
+export AWS_SECRET_ACCESS_KEY="your_secret"
+export SLACK_WEBHOOK_URL="your_webhook"
+
+3. Run the Hunter
+
+Bash
+python waste_hunter.py
+
+⚙️ Architecture
+Core: Python script uses boto3 to loop through all active AWS regions (describe_regions).
+
+Logic: Aggregates costs per region and filters out resources tagged Skip=True.
+
+CI/CD: cron job on GitHub Actions triggers the scan every Sunday at 00:00 UTC.
