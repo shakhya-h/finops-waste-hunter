@@ -6,13 +6,12 @@ import requests
 import json
 from datetime import datetime, timezone, timedelta
 
-# --- PRICING CONSTANTS (Monthly Estimates) ---
-EBS_PRICE_PER_GB  = 0.10    # Standard gp3 pricing
-IDLE_IP_PRICE     = 3.60    # ~$0.005/hr
-SNAPSHOT_PRICE    = 0.05    # Per GB/mo
-ALB_PRICE         = 16.00   # Application Load Balancer base cost
+EBS_PRICE_PER_GB  = 0.10    
+IDLE_IP_PRICE     = 3.60    
+SNAPSHOT_PRICE    = 0.05    
+ALB_PRICE         = 16.00   
 
-# --- CONFIGURATION ---
+
 SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
 
 def send_slack_alert(message):
@@ -115,23 +114,23 @@ def main():
     try:
         regions = get_active_regions()
     except:
-        regions = ['eu-north-1', 'us-east-1'] # Fallback
+        regions = ['eu-north-1', 'us-east-1'] 
         
     global_savings = 0.0
     detailed_report = []
     
-    # Header for the report
+    
     detailed_report.append("💰 *Global FinOps Report*")
     detailed_report.append("=========================")
 
     for region in regions:
         try:
-            # print(f"Scanning {region}...") # Uncomment for debug
+        
             ec2_res = boto3.resource('ec2', region_name=region)
             ec2_cli = boto3.client('ec2', region_name=region)
             elbv2_cli = boto3.client('elbv2', region_name=region)
             
-            # Capture costs individually
+            
             r_vol = hunt_volumes(ec2_res, region)
             r_ip = hunt_elastic_ips(ec2_cli, region)
             r_snap = hunt_snapshots(ec2_cli, region)
@@ -139,11 +138,11 @@ def main():
             
             region_total = r_vol + r_ip + r_snap + r_lb
             
-            # If this region has waste, add a section to the report
+
             if region_total > 0:
-                print(f"Found ${region_total} waste in {region}") # Console log
+                print(f"Found ${region_total} waste in {region}")
                 
-                # Build the region block
+                
                 region_block = f"🌍 *{region}*: ${region_total:.2f}"
                 if r_vol > 0:  region_block += f"\n     • Volumes: ${r_vol:.2f}"
                 if r_ip > 0:   region_block += f"\n     • IPs: ${r_ip:.2f}"
@@ -156,11 +155,9 @@ def main():
         except Exception as e:
             continue
             
-    # Final Footer
     detailed_report.append("=========================")
     detailed_report.append(f"🚨 *Total Monthly Waste: ${global_savings:.2f}*")
     
-    # Only send alert if waste was found
     if global_savings > 0:
         final_message = "\n".join(detailed_report)
         print("\n--- FINAL REPORT PREVIEW ---")
